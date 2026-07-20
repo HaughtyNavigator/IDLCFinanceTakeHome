@@ -1,0 +1,18 @@
+# Core
+fastapi==0.139.2
+uvicorn[standard]==0.51.0
+pydantic==2.13.4
+pillow==12.3.0
+python-dotenv==1.2.2
+python-multipart==0.0.32
+
+# AI
+google-genai==2.12.1
+
+# Testing
+pytest==9.1.1
+httpx==0.28.1
+
+# Dev tooling (formatting, per CLAUDE.md code standards)
+black==26.5.1
+isort==8.0.1

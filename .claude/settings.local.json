@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(py *)",
+      "Bash(\"F:\\\\IDLCFinanceTakeHome\\\\.venv\\\\Scripts\\\\python.exe\" -c \"from app.schemas import NIDData, GeminiNIDExtraction, ErrorResponse; from app import config; print\\(NIDData\\(nidNumber='123 4567890', dateOfBirth='not-a-date'\\).model_dump\\(\\)\\)\")",
+      "PowerShell(& \"F:\\\\IDLCFinanceTakeHome\\\\.venv\\\\Scripts\\\\python.exe\" \"C:\\\\Users\\\\Public\\\\test_image_utils.py\")",
+      "Bash(F:\\\\IDLCFinanceTakeHome\\\\.venv\\\\Scripts\\\\python.exe *)",
+      "PowerShell(F:\\\\IDLCFinanceTakeHome\\\\.venv\\\\Scripts\\\\python.exe -m isort F:\\\\IDLCFinanceTakeHome\\\\app; F:\\\\IDLCFinanceTakeHome\\\\.venv\\\\Scripts\\\\python.exe -m black F:\\\\IDLCFinanceTakeHome\\\\app)",
+      "Bash(.venv/Scripts/python.exe *)",
+      "Bash(./.venv/Scripts/python.exe *)",
+      "Bash(F:/IDLCFinanceTakeHome/.venv/Scripts/python.exe -m pytest F:/IDLCFinanceTakeHome -q)",
+      "PowerShell($ok=$false; foreach \\($i in 1..20\\) { try { $r = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/ -TimeoutSec 2; if \\($r.StatusCode -eq 200\\) { $ok=$true; break } } catch { Start-Sleep -Milliseconds 500 } }; \"root: $ok\"; $d = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/docs -TimeoutSec 5; \"docs: $\\($d.StatusCode\\)\"; $o = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/openapi.json -TimeoutSec 5; \"openapi: $\\($o.StatusCode\\)\")",
+      "PowerShell($ok=$false; foreach \\($i in 1..20\\) { try { $r = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/ -TimeoutSec 2; if \\($r.StatusCode -eq 200\\) { $ok=$true; break } } catch { Start-Sleep -Milliseconds 500 } }; \"server up: $ok\"; curl.exe -s -w \"`nHTTP %{http_code} in %{time_total}s`n\" -F \"front=@F:\\\\IDLCFinanceTakeHome\\\\NID_Images\\\\Person_1\\\\Government of the People's Republic of Bangladesh_page-0001.jpg\" -F \"back=@F:\\\\IDLCFinanceTakeHome\\\\NID_Images\\\\Person_1\\\\Government of the People's Republic of Bangladesh_page-0002.jpg\" http://127.0.0.1:8000/extract-nid; curl.exe -s -w \"`nHTTP %{http_code} in %{time_total}s`n\" -F \"front=@F:\\\\IDLCFinanceTakeHome\\\\NID_Images\\\\Person_2\\\\Government of the People's Republic of Bangladesh \\(1\\)_page-0001.jpg\" -F \"back=@F:\\\\IDLCFinanceTakeHome\\\\NID_Images\\\\Person_2\\\\Government of the People's Republic of Bangladesh \\(1\\)_page-0002.jpg\" http://127.0.0.1:8000/extract-nid)",
+      "PowerShell(docker build *)",
+      "PowerShell(claude plugin *)",
+      "Bash(gh --version)",
+      "Bash(gh auth *)"
+    ]
+  }
+}

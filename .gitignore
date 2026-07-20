@@ -1,0 +1,20 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Test images (never commit real NID cards)
+NID_Images/
+tests/images/
+*.jpg
+*.jpeg
+*.png
+
+# Editor/OS
+.vscode/
+.idea/
+Thumbs.db

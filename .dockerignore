@@ -1,0 +1,13 @@
+# .env and NID_Images/ are excluded because they contain secrets (API key)
+# and PII (real NID card photos) — they must never be baked into the image.
+.venv/
+.env
+NID_Images/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+.git/
+tests/
+*.md
+.gitignore
+LOG.md

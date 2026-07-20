@@ -1,0 +1,9 @@
+services:
+  nid-extractor:
+    build: .
+    image: nid-extractor:latest
+    ports:
+      - "8000:8000"
+    # GEMINI_API_KEY (and optional GEMINI_MODEL) come from .env — see .env.example
+    env_file: .env
+    restart: unless-stopped
