@@ -18,3 +18,6 @@ tests/images/
 .vscode/
 .idea/
 Thumbs.db
+
+# Local tool config (machine-specific paths, not part of the deliverable)
+.claude/

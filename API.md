@@ -140,6 +140,7 @@ Every error, regardless of cause, uses one JSON shape:
 | `422` | The images are unreadable (blurry, cropped, poorly lit) **and** no fields at all could be extracted. | A short description of the readability problem, e.g. `The images are too blurry to read.` |
 | `500` | Unexpected server error. | `Internal server error.` |
 | `502` | The AI service failed, timed out, or returned an unusable response (after one automatic retry with a short backoff). | `AI service temporarily unavailable, please retry.` |
+| `503` | The server has no `GEMINI_API_KEY` configured. This is an operator error, not a client error — retrying will not help until the variable is set. | `Server is not configured: GEMINI_API_KEY is not set. Set it in a .env file (see .env.example) or pass it to the container, then restart.` |
 
 Notes:
 
@@ -161,6 +162,7 @@ Notes:
 | `422` | Missing file field, not an NID card, or fully unreadable images. |
 | `500` | Unexpected server error. |
 | `502` | AI service unavailable. |
+| `503` | Server misconfigured — `GEMINI_API_KEY` not set. |
 
 ---
 
@@ -183,7 +185,7 @@ Set via environment variables / `.env` (see `.env.example`):
 
 | Variable | Default | Description |
 |---|---|---|
-| `GEMINI_API_KEY` | — (required) | Google Gemini API key. Requests fail with `502` if unset. |
+| `GEMINI_API_KEY` | — (required) | Google Gemini API key. If unset, the server still starts but logs a critical startup error and fails extraction requests with `503`. |
 | `GEMINI_MODEL` | `gemini-3.1-flash-lite` | Gemini model used for extraction. |
 
 Fixed limits (in `app/config.py`): 10 MB combined upload, 300 px minimum

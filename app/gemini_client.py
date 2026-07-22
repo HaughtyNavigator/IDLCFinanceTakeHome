@@ -67,6 +67,16 @@ class GeminiServiceError(Exception):
     """Raised when the AI service fails or returns an unusable response."""
 
 
+class GeminiConfigurationError(GeminiServiceError):
+    """Raised when the server is missing the Gemini API key.
+
+    A subclass of GeminiServiceError so existing callers that handle the
+    parent class keep working, while the API layer can distinguish a server
+    misconfiguration (operator must set a variable) from a genuine upstream
+    outage (client should retry).
+    """
+
+
 def _build_config() -> types.GenerateContentConfig:
     """Build the Gemini generation config for structured NID extraction."""
     return types.GenerateContentConfig(
@@ -140,11 +150,12 @@ def extract_nid_data(front_jpeg: bytes, back_jpeg: bytes) -> GeminiNIDExtraction
         The extracted, validated NID data.
 
     Raises:
-        GeminiServiceError: If the API key is not configured, the API call
-            fails after a retry, or the response cannot be parsed.
+        GeminiConfigurationError: If the API key is not configured.
+        GeminiServiceError: If the API call fails after a retry, or the
+            response cannot be parsed.
     """
     if not config.GEMINI_API_KEY:
-        raise GeminiServiceError("GEMINI_API_KEY is not configured.")
+        raise GeminiConfigurationError("GEMINI_API_KEY is not configured.")
 
     client = Client(api_key=config.GEMINI_API_KEY)
     response = _call_gemini(client, front_jpeg, back_jpeg)

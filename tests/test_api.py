@@ -16,7 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from app.gemini_client import GeminiServiceError
+from app.gemini_client import GeminiConfigurationError, GeminiServiceError
 from app.main import app
 from app.schemas import GeminiNIDExtraction
 
@@ -262,6 +262,23 @@ def test_gemini_service_error_returns_502(
     assert response.json() == {
         "error": "AI service temporarily unavailable, please retry."
     }
+
+
+def test_missing_api_key_returns_503_naming_the_variable(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing ``GEMINI_API_KEY`` yields a 503 that names the variable, not a 502."""
+    patch_extract(
+        monkeypatch,
+        side_effect=GeminiConfigurationError("GEMINI_API_KEY is not configured."),
+    )
+    files = build_files(make_jpeg(400, 400), make_jpeg(400, 400))
+
+    response = client.post("/extract-nid", files=files)
+
+    assert response.status_code == 503
+    error = response.json()["error"]
+    assert "GEMINI_API_KEY is not set" in error
 
 
 def test_invalid_nid_number_is_nulled_by_schema_validation(

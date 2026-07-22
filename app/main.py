@@ -7,14 +7,20 @@ are never logged or included in error messages.
 
 import logging
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import AsyncIterator
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 
 from app import config
-from app.gemini_client import GeminiServiceError, extract_nid_data
+from app.gemini_client import (
+    GeminiConfigurationError,
+    GeminiServiceError,
+    extract_nid_data,
+)
 from app.image_utils import ImageValidationError, validate_and_prepare
 from app.schemas import ErrorResponse, GeminiNIDExtraction, NIDData
 
@@ -26,6 +32,25 @@ logger = logging.getLogger("nid_extractor")
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
+MISSING_KEY_MESSAGE = (
+    "Server is not configured: GEMINI_API_KEY is not set. Set it in a .env "
+    "file (see .env.example) or pass it to the container, then restart."
+)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Warn loudly at startup if the server has no Gemini API key.
+
+    The app still starts so the container does not crash-loop under the
+    Compose ``restart: unless-stopped`` policy; extraction requests then fail
+    with a 503 that names the missing variable.
+    """
+    if not config.GEMINI_API_KEY:
+        logger.critical(MISSING_KEY_MESSAGE)
+    yield
+
+
 app = FastAPI(
     title="Bangladesh NID Information Extractor",
     description=(
@@ -33,6 +58,7 @@ app = FastAPI(
         "to extract structured, translated field data."
     ),
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 
@@ -89,6 +115,20 @@ async def handle_image_validation_error(
 ) -> JSONResponse:
     """Return a 400 with the user-facing image validation message."""
     return JSONResponse(status_code=400, content={"error": str(exc)})
+
+
+@app.exception_handler(GeminiConfigurationError)
+async def handle_gemini_configuration_error(
+    request: Request, exc: GeminiConfigurationError
+) -> JSONResponse:
+    """Return a 503 naming the missing configuration variable.
+
+    Registered separately from the GeminiServiceError handler so an operator
+    error is not reported as a transient upstream outage. Only the variable
+    name is disclosed, never its value.
+    """
+    logger.critical(MISSING_KEY_MESSAGE)
+    return JSONResponse(status_code=503, content={"error": MISSING_KEY_MESSAGE})
 
 
 @app.exception_handler(GeminiServiceError)
@@ -176,6 +216,10 @@ async def handle_http_exception(request: Request, exc: HTTPException) -> JSONRes
             "description": "Not an NID card, unreadable, or missing fields.",
         },
         502: {"model": ErrorResponse, "description": "AI service unavailable."},
+        503: {
+            "model": ErrorResponse,
+            "description": "Server misconfigured (GEMINI_API_KEY not set).",
+        },
     },
 )
 def extract_nid(front: UploadFile = File(...), back: UploadFile = File(...)) -> NIDData:

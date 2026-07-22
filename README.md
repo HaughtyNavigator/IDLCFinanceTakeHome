@@ -101,16 +101,19 @@ uvicorn app.main:app --reload
 
 ## Run with Docker
 
-Prerequisite: Docker, and a `.env` file containing `GEMINI_API_KEY`:
+Prerequisite: Docker, plus a Google Gemini API key.
+
+**Option A (preferred) — Docker Compose.** Either supply the key inline:
+
+```bash
+GEMINI_API_KEY=<your-key> docker compose up --build
+```
+
+or put it in a `.env` file first and just run `docker compose up --build`:
 
 ```bash
 cp .env.example .env
 # then edit .env and set GEMINI_API_KEY=<your-key>
-```
-
-**Option A (preferred) — Docker Compose:**
-
-```bash
 docker compose up --build
 ```
 
@@ -118,12 +121,16 @@ docker compose up --build
 
 ```bash
 docker build -t nid-extractor .
-docker run --rm -p 8000:8000 --env-file .env nid-extractor
+docker run --rm -p 8000:8000 -e GEMINI_API_KEY=<your-key> nid-extractor
 ```
 
 Either way, the app is at http://localhost:8000. The image never contains
-the API key or any NID images; the key is injected at runtime via
-`--env-file`/`env_file`.
+the API key or any NID images; the key is injected at runtime only.
+
+`.env` is optional — Compose starts without it. If no key is found the
+container still comes up (so it does not crash-loop), logs a critical
+startup error, and returns a `503` naming the missing variable on any
+extraction request.
 
 ## API Reference
 
@@ -174,6 +181,7 @@ mirrored to the same value rather than one being left `null`.
 | `is_nid` is false | 422 | "The uploaded images do not appear to be a Bangladesh NID card." |
 | `readability_issue` set and all fields null | 422 | Surfaces the readability issue to the user |
 | Gemini API failure / timeout | 502 | "AI service temporarily unavailable, please retry." (one automatic retry with backoff before failing) |
+| `GEMINI_API_KEY` not set on the server | 503 | Message naming the missing variable (operator error, not client error) |
 | Partial extraction (some fields null) | 200 | Data returned as-is with nulls; frontend displays "Not readable" for null fields |
 
 ## Architecture

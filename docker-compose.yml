@@ -4,6 +4,16 @@ services:
     image: nid-extractor:latest
     ports:
       - "8000:8000"
-    # GEMINI_API_KEY (and optional GEMINI_MODEL) come from .env — see .env.example
-    env_file: .env
+    # GEMINI_API_KEY (and optional GEMINI_MODEL) come from .env — see .env.example.
+    # required: false so `docker compose up` still starts on a fresh clone with
+    # no .env; the app then logs a clear startup error and returns a 503 that
+    # names the missing variable, instead of Compose failing to parse.
+    env_file:
+      - path: .env
+        required: false
+    # Allows `GEMINI_API_KEY=... docker compose up` with no .env file at all.
+    # A value set in the shell takes precedence over the one in .env.
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.1-flash-lite}
     restart: unless-stopped

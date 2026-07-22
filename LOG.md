@@ -26,6 +26,15 @@
 - Design note: mirroring implemented symmetrically (works in either direction), on the reasoning that a single printed address is the card's only address of record.
 - Verified live: Person_1 permanentAddress now mirrors presentAddress; Person_2 unchanged (both addresses identical as before).
 
+## 2026-07-22
+- Requirements audit against the company brief: all functional/technical items covered, but found `docker compose up` hard-failed on a fresh clone — `env_file: .env` is mandatory in Compose and `.env` is (correctly) gitignored, so an evaluator cloning the repo hit `env file ... not found`. Verified by running compose in an empty directory.
+- Fix: `env_file` now `required: false` plus an `environment:` passthrough, so the app runs from `.env` OR from `GEMINI_API_KEY=... docker compose up` with no file at all. Verified all three cases (fresh clone parses, shell var wins, existing `.env` still resolves and is not clobbered by the empty default).
+- Security review of that change: no new exposure — key stays gitignored, stays out of the image, still runtime-injected; `docker inspect` reveals env identically under either mechanism. Real delta is fail-closed becoming fail-open, addressed below.
+- Fix: missing key previously surfaced as 502 "AI service temporarily unavailable" — misleading, reads as an upstream outage rather than an operator error. Added `GeminiConfigurationError(GeminiServiceError)` and a dedicated handler returning 503 naming the variable, plus a critical log line at startup via a lifespan hook.
+- Decision: startup check logs and continues rather than exiting. Compose sets `restart: unless-stopped`, so exiting on boot would crash-loop — worse for an evaluator than the failure it replaces.
+- Cleanup: untracked `this is not an image` (stray corrupt-upload fixture) and `.claude/settings.local.json` (machine-local paths); added `.claude/` to `.gitignore`.
+- Tests now 17 (added missing-key 503 case); black/isort clean. `PROJECT.md` and `CLAUDE (2).md` intentionally kept in the repo at the user's request as evidence of process.
+
 ## 2026-07-19
 - Dockerized the app (subagent): `Dockerfile` (python:3.13-slim, layered pip install, copies only `app/` + `static/`, non-root user, stdlib HEALTHCHECK), `.dockerignore` (excludes `.env`, `NID_Images/`, `.venv/` — secrets/PII never enter the image), `docker-compose.yml` (`env_file: .env`, port 8000), README "Run with Docker" section.
 - Review fix (orchestrator): `.dockerignore` patterns `__pycache__/`/`*.pyc` only match at context root; changed to `**/__pycache__/`/`**/*.pyc` after finding stale host bytecode inside the built image.
