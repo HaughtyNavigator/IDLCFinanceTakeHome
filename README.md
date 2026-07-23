@@ -4,41 +4,44 @@ An AI-powered FastAPI service that reads the front and back photos of a
 Bangladesh National ID (NID) card and returns the card's data as structured,
 English-language JSON. A single multimodal call to Google Gemini 3.1 Flash
 Lite performs OCR, semantic Bengali-to-English translation, and field
-structuring in one step — no separate OCR or translation library is used.
+structuring in one step, with no separate OCR or translation library.
+
+> **Note for evaluators:** [AI_Usage.md](AI_Usage.md) documents how AI tools
+> were used to build this project.
 
 ## Features
 
-- **Single multimodal call** — one Gemini request per submission performs
+- **Single multimodal call**: one Gemini request per submission performs
   OCR, translation, and structuring together, instead of chaining separate
   OCR/translation/parsing steps.
-- **Structured output via Pydantic** — the Gemini `response_schema` is
+- **Structured output via Pydantic**: the Gemini `response_schema` is
   derived directly from a Pydantic model, so the model returns typed JSON
   rather than free text that would need regex parsing.
-- **Byte-level image validation** — uploads are validated by decoding actual
+- **Byte-level image validation**: uploads are validated by decoding actual
   image content with Pillow (`Image.verify()` + format check), never by file
   extension or client-supplied content type.
-- **EXIF-aware downscaling** — images are auto-rotated per EXIF orientation
+- **EXIF-aware downscaling**: images are auto-rotated per EXIF orientation
   and downscaled so the longest side is at most 1600px, keeping Gemini
   latency and cost predictable.
-- **Partial extraction is success, up to a point** — any field the model
+- **Partial extraction is success, up to a point**: any field the model
   cannot confidently read is returned as `null` in a `200` response instead
   of failing the whole request, and the UI names the missing fields and asks
   for a better photo. Past seven missing fields the result is too sparse to
   be useful, so the request is rejected with a `422` asking the user to
   retry rather than returning a near-empty object.
-- **Self-consistency voting** — each request runs several independent
+- **Self-consistency voting**: each request runs several independent
   extractions and returns only the field values that agree across a majority
   of them. Genuine readings are stable between runs while hallucinations
   vary, so disagreement is treated as an unreadable field and returned as
   `null`. Matching is per-field: addresses merge near-identical readings,
   names need an exact majority, and numbers and dates additionally reject
   any value a dissenting sample read slightly differently.
-- **Strict JSON error contract** — every error path, regardless of cause,
+- **Strict JSON error contract**: every error path, regardless of cause,
   returns `{"error": "<message>"}` with an appropriate HTTP status code.
-- **Observable voting** — the terminal shows one line per field per request
+- **Observable voting**: the terminal shows one line per field per request
   (`KEPT 3/3` / `DROPPED 1/3` / `EMPTY 0/3`), so it is visible exactly which
   fields the samples agreed on and which were discarded.
-- **PII-safe logging** — only request metadata (method, path, status,
+- **PII-safe logging**: only request metadata (method, path, status,
   duration, error category, per-field vote counts) is ever logged; image
   bytes, extracted personal data, and the API key are never logged. The
   `CONSENSUS_LOG_VALUES` flag can add the extracted values to the vote log
@@ -118,7 +121,7 @@ uvicorn app.main:app --reload
 
 Prerequisite: Docker, plus a Google Gemini API key.
 
-**Option A (preferred) — Docker Compose.** Either supply the key inline:
+**Option A (preferred): Docker Compose.** Either supply the key inline:
 
 ```bash
 GEMINI_API_KEY=<your-key> docker compose up --build
@@ -132,7 +135,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-**Option B — plain Docker:**
+**Option B: plain Docker.**
 
 ```bash
 docker build -t nid-extractor .
@@ -142,7 +145,7 @@ docker run --rm -p 8000:8000 -e GEMINI_API_KEY=<your-key> nid-extractor
 Either way, the app is at http://localhost:8000. The image never contains
 the API key or any NID images; the key is injected at runtime only.
 
-`.env` is optional — Compose starts without it. If no key is found the
+`.env` is optional; Compose starts without it. If no key is found the
 container still comes up (so it does not crash-loop), logs a critical
 startup error, and returns a `503` naming the missing variable on any
 extraction request.
@@ -157,7 +160,7 @@ example requests, is in [API.md](API.md). A summary follows.
 Accepts `multipart/form-data` with two required file fields, `front` and
 `back` (JPG, JPEG, or PNG, validated by actual file content).
 
-**Success — `200 OK`**
+**Success: `200 OK`**
 
 ```json
 {
@@ -188,7 +191,7 @@ asking for a clearer photo instead. If the card only ever printed a
 single address, `presentAddress` and `permanentAddress` are guaranteed to be
 mirrored to the same value rather than one being left `null`.
 
-**Errors** — every error response has the shape `{"error": "<message>"}`.
+**Errors:** every error response has the shape `{"error": "<message>"}`.
 
 | Condition | Status | Message |
 |---|---|---|
@@ -216,20 +219,21 @@ upload (front, back)
 
 **Modules:**
 
-- `app/main.py` — FastAPI app, routes, exception handlers, request logging.
-- `app/schemas.py` — Pydantic models: the public `NIDData` API contract and
-  `GeminiNIDExtraction`, the internal Gemini structured-output schema.
-- `app/gemini_client.py` — builds the prompt, runs the concurrent Gemini
+- `app/main.py`: FastAPI app, routes, exception handlers, request logging.
+- `app/schemas.py`: Pydantic models, namely the public `NIDData` API
+  contract and `GeminiNIDExtraction`, the internal Gemini structured-output
+  schema.
+- `app/gemini_client.py`: builds the prompt, runs the concurrent Gemini
   samples with structured output, retries once on transient failure, parses
   the responses.
-- `app/consensus.py` — pure voting logic: compares the samples field by
+- `app/consensus.py`: pure voting logic, comparing the samples field by
   field under a per-field match policy (similarity, exact, or strict) and
-  keeps only the values that survive it.
-- `app/image_utils.py` — validates uploaded bytes as real images, checks
+  keeping only the values that survive it.
+- `app/image_utils.py`: validates uploaded bytes as real images, checks
   minimum dimensions, applies EXIF orientation, downscales, re-encodes JPEG.
-- `app/config.py` — loads configuration (API key, model name, size/timeout
+- `app/config.py`: loads configuration (API key, model name, size/timeout
   limits) from environment variables via `python-dotenv`.
-- `static/index.html` — a single vanilla-JS page with two file inputs, a
+- `static/index.html`: a single vanilla-JS page with two file inputs, a
   submit button, a loading state, and a formatted JSON result panel.
 
 **Design decisions:**
@@ -240,20 +244,20 @@ upload (front, back)
   of chaining separate OCR/translation/parsing services.
 - **Why `response_schema` from Pydantic instead of regex parsing:** Gemini's
   structured-output mode guarantees a JSON shape that matches the schema, so
-  the same Pydantic model documents the contract and validates it — brittle
-  regex extraction over free-form text is unnecessary.
+  the same Pydantic model documents the contract and validates it, and
+  brittle regex extraction over free-form text becomes unnecessary.
 - **Why self-consistency instead of asking the model for confidence:**
-  self-reported confidence proved unreliable in testing — the model rated
-  reconstructed values as confidently readable. Agreement across independent
-  samples is a behavioral signal rather than a self-assessment: a genuine
-  reading of a blurry digit is stable across runs, while a fabricated one
-  differs each time, so disagreement exposes hallucination the model will
-  not admit to. The cost is N API calls, issued concurrently so latency
-  stays close to a single call.
+  self-reported confidence proved unreliable in testing, since the model
+  rated reconstructed values as confidently readable. Agreement across
+  independent samples is a behavioral signal rather than a self-assessment:
+  a genuine reading of a blurry digit is stable across runs, while a
+  fabricated one differs each time, so disagreement exposes hallucination
+  the model will not admit to. The cost is N API calls, issued concurrently
+  so latency stays close to a single call.
 - **Why one similarity score drives two opposite rules:** the same 0.90
   means different things for different fields, so `consensus.py` assigns
   each field a match policy. For an **address**, two readings 0.88 alike are
-  the same address written with different form labels — exact matching
+  the same address written with different form labels. Exact matching
   regressed a working card this way, dropping both address fields because
   three samples wrote `Sector No-10`, `Sector No.-10` and `Road: 05`. Those
   are merged. For a **number or date**, two readings 0.90 alike differ by
@@ -263,7 +267,7 @@ upload (front, back)
 - **Why a majority alone is unsafe for numbers and dates:** voting catches
   random fabrication, not systematic misreading. Measured on a deliberately
   degraded photo, three of five samples agreed on the same wrong date of
-  birth — a clean majority for a value that was simply incorrect — while the
+  birth, a clean majority for a value that was simply incorrect, while the
   two dissenters sat one digit away at 0.90. Under the strict policy that
   near-miss discards the field instead of confirming it. On the sharp
   original all ten fields still extract unanimously, so the rule costs
@@ -272,9 +276,9 @@ upload (front, back)
   A card photo often has one illegible field (e.g. a smudged NID number);
   failing the whole request would force needless re-uploads, so partial data
   is returned as a `200` with `null` for anything not confidently read. Past
-  seven missing fields that reasoning inverts — the problem is the photo, not
+  seven missing fields that reasoning inverts: the problem is the photo, not
   one field, and returning eight nulls invites the caller to build on a
-  result that is barely there — so the request is rejected with a `422` and
+  result that is barely there, so the request is rejected with a `422` and
   a retry instruction. The threshold is one constant,
   `config.MAX_UNREADABLE_FIELDS`, deliberately set to tolerate heavily
   partial reads and reject only a near-total failure; the per-field warning
@@ -292,7 +296,7 @@ pytest
 
 All tests mock the Gemini call (`app.main.extract_nid_data` is monkeypatched)
 and generate test images in memory with Pillow, so the suite runs fully
-offline — no `GEMINI_API_KEY` is required and no network call is ever made.
+offline, with no `GEMINI_API_KEY` required and no network call ever made.
 
 ## Project Structure
 
@@ -302,6 +306,7 @@ IDLCFinanceTakeHome/
 │   ├── main.py          # FastAPI app, routes, static file serving
 │   ├── schemas.py        # Pydantic models (API response + Gemini schema)
 │   ├── gemini_client.py  # Gemini call, prompt, retry logic
+│   ├── consensus.py      # field-level agreement across samples
 │   ├── image_utils.py    # validation, verify, downscale
 │   └── config.py         # env/config loading
 ├── static/
@@ -317,5 +322,7 @@ IDLCFinanceTakeHome/
 ├── docker-compose.yml
 ├── Dockerfile
 ├── README.md
+├── API.md                 # full endpoint documentation
+├── AI_Usage.md            # how AI tools were used to build this
 └── PROJECT.md             # requirements source of truth
 ```
