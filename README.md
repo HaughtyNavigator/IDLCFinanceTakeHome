@@ -20,14 +20,27 @@ structuring in one step — no separate OCR or translation library is used.
 - **EXIF-aware downscaling** — images are auto-rotated per EXIF orientation
   and downscaled so the longest side is at most 1600px, keeping Gemini
   latency and cost predictable.
-- **Partial extraction is success, not failure** — any field the model
+- **Partial extraction is success, up to a point** — any field the model
   cannot confidently read is returned as `null` in a `200` response instead
-  of failing the whole request.
+  of failing the whole request, and the UI names the missing fields and asks
+  for a better photo. Past four missing fields the result is too sparse to
+  be useful, so the request is rejected with a `422` asking the user to
+  retry rather than returning a mostly empty object.
+- **Self-consistency voting** — each request runs several independent
+  extractions and returns only the field values that agree across a majority
+  of them. Genuine readings are stable between runs while hallucinations
+  vary, so disagreement is treated as an unreadable field and returned as
+  `null`.
 - **Strict JSON error contract** — every error path, regardless of cause,
   returns `{"error": "<message>"}` with an appropriate HTTP status code.
+- **Observable voting** — the terminal shows one line per field per request
+  (`KEPT 3/3` / `DROPPED 1/3` / `EMPTY 0/3`), so it is visible exactly which
+  fields the samples agreed on and which were discarded.
 - **PII-safe logging** — only request metadata (method, path, status,
-  duration, error category) is ever logged; image bytes, extracted personal
-  data, and the API key are never logged.
+  duration, error category, per-field vote counts) is ever logged; image
+  bytes, extracted personal data, and the API key are never logged. The
+  `CONSENSUS_LOG_VALUES` flag can add the extracted values to the vote log
+  for local debugging, and is off by default for that reason.
 
 ## Technology Stack
 
@@ -167,7 +180,9 @@ of an older laminated card, for `bloodGroup`), and `issueDate` is normalized
 to `YYYY-MM-DD` like `dateOfBirth`.
 
 Any field the model cannot confidently read is returned as `null`; a
-partially filled response is still a `200`. If the card only ever printed a
+partially filled response is still a `200`, as long as no more than four of
+the ten fields are missing. At five or more the service returns a `422`
+asking for a clearer photo instead. If the card only ever printed a
 single address, `presentAddress` and `permanentAddress` are guaranteed to be
 mirrored to the same value rather than one being left `null`.
 
@@ -179,10 +194,10 @@ mirrored to the same value rather than one being left `null`.
 | Wrong format / corrupt image (Pillow verify fails) | 400 | "Image file is corrupt or not a supported format (JPG/JPEG/PNG)." |
 | Image too small (< 300px on either dimension) | 400 | Message suggesting a higher-resolution photo |
 | `is_nid` is false | 422 | "The uploaded images do not appear to be a Bangladesh NID card." |
-| `readability_issue` set and all fields null | 422 | Surfaces the readability issue to the user |
+| 5+ of the 10 fields not agreed across samples | 422 | Message asking for sharper photos and a retry (prefixed with the model's own readability complaint, if any) |
 | Gemini API failure / timeout | 502 | "AI service temporarily unavailable, please retry." (one automatic retry with backoff before failing) |
 | `GEMINI_API_KEY` not set on the server | 503 | Message naming the missing variable (operator error, not client error) |
-| Partial extraction (some fields null) | 200 | Data returned as-is with nulls; frontend displays "Not readable" for null fields |
+| Partial extraction (1-4 fields null) | 200 | Data returned as-is with nulls; the frontend marks each as "Not readable" and shows a banner naming them and asking for a better photo |
 
 ## Architecture
 
@@ -191,7 +206,8 @@ mirrored to the same value rather than one being left `null`.
 ```
 upload (front, back)
   -> byte-level validation & downscale (Pillow)
-  -> single Gemini structured-output call (front + back + prompt)
+  -> N concurrent Gemini structured-output calls (front + back + prompt)
+  -> field-level agreement vote across the samples
   -> Pydantic validation (NID number / date format)
   -> JSON response
 ```
@@ -201,8 +217,11 @@ upload (front, back)
 - `app/main.py` — FastAPI app, routes, exception handlers, request logging.
 - `app/schemas.py` — Pydantic models: the public `NIDData` API contract and
   `GeminiNIDExtraction`, the internal Gemini structured-output schema.
-- `app/gemini_client.py` — builds the prompt, calls Gemini with structured
-  output, retries once on transient failure, parses the response.
+- `app/gemini_client.py` — builds the prompt, runs the concurrent Gemini
+  samples with structured output, retries once on transient failure, parses
+  the responses.
+- `app/consensus.py` — pure voting logic: compares the samples field by
+  field and keeps only values agreed by a majority.
 - `app/image_utils.py` — validates uploaded bytes as real images, checks
   minimum dimensions, applies EXIF orientation, downscales, re-encodes JPEG.
 - `app/config.py` — loads configuration (API key, model name, size/timeout
@@ -220,11 +239,23 @@ upload (front, back)
   structured-output mode guarantees a JSON shape that matches the schema, so
   the same Pydantic model documents the contract and validates it — brittle
   regex extraction over free-form text is unnecessary.
-- **Why nulls instead of errors for partial reads:** A card photo often has
-  one illegible field (e.g. a smudged NID number); failing the whole request
-  would force needless re-uploads, so partial data is returned as a `200`
-  with `null` for anything not confidently read, and the caller decides how
-  to handle gaps.
+- **Why self-consistency instead of asking the model for confidence:**
+  self-reported confidence proved unreliable in testing — the model rated
+  reconstructed values as confidently readable. Agreement across independent
+  samples is a behavioral signal rather than a self-assessment: a genuine
+  reading of a blurry digit is stable across runs, while a fabricated one
+  differs each time, so disagreement exposes hallucination the model will
+  not admit to. The cost is N API calls, issued concurrently so latency
+  stays close to a single call.
+- **Why nulls instead of errors for partial reads, but only up to a point:**
+  A card photo often has one illegible field (e.g. a smudged NID number);
+  failing the whole request would force needless re-uploads, so partial data
+  is returned as a `200` with `null` for anything not confidently read. Past
+  four missing fields that reasoning inverts — the problem is the photo, not
+  one field, and returning six nulls invites the caller to build on a result
+  that mostly is not there — so the request is rejected with a `422` and a
+  retry instruction. The threshold is one constant,
+  `config.MAX_UNREADABLE_FIELDS`.
 - **Why PII-safe logging:** In a fintech context, NID numbers, names, and
   addresses are sensitive personal data; logging only metadata (status,
   duration, error category) keeps the audit trail useful for debugging

@@ -5,13 +5,18 @@ Only exception class names / high-level error categories may be logged by
 callers.
 """
 
+import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from google.genai import Client, errors, types
 from pydantic import ValidationError
 
 from app import config
+from app.consensus import build_consensus, minimum_agreement
 from app.schemas import GeminiNIDExtraction
+
+logger = logging.getLogger("nid_extractor")
 
 _PROMPT = """\
 You are analyzing two photographs of a Bangladesh National ID (NID) card.
@@ -50,6 +55,14 @@ Formatting rules:
 - Translate the place of birth to English, like other translated fields.
 - If any field cannot be read with confidence, return null for that field.
   NEVER guess or fabricate a value.
+
+Transcription rules (important):
+- TRANSCRIBE only characters that are physically visible in the image. Do
+  NOT reconstruct, autocomplete, or infer a value from context, from what is
+  typical on Bangladeshi NID cards, or from other fields on the card.
+- A plausible-looking value is NOT the same as a legible one. If a name,
+  digit, or word is smudged, cut off, glared over, or out of focus, return
+  null for that field instead of filling in what it "probably" says.
 
 Validity rules:
 - Set is_nid to false if the images do not actually appear to depict a
@@ -139,24 +152,79 @@ def _parse_response(
         raise GeminiServiceError("AI service returned an unusable response.") from exc
 
 
+def _extract_once(
+    client: Client, front_jpeg: bytes, back_jpeg: bytes
+) -> GeminiNIDExtraction:
+    """Run a single extraction: one API call plus response parsing."""
+    return _parse_response(_call_gemini(client, front_jpeg, back_jpeg))
+
+
+def _gather_samples(
+    client: Client, front_jpeg: bytes, back_jpeg: bytes, sample_count: int
+) -> list[GeminiNIDExtraction]:
+    """Run several independent extractions concurrently.
+
+    Samples are issued in parallel so total latency stays close to that of a
+    single call. Samples that fail are dropped rather than failing the whole
+    request; the consensus is then taken over whichever succeeded.
+
+    Raises:
+        GeminiServiceError: If every sample failed.
+    """
+    with ThreadPoolExecutor(max_workers=sample_count) as executor:
+        futures = [
+            executor.submit(_extract_once, client, front_jpeg, back_jpeg)
+            for _ in range(sample_count)
+        ]
+        extractions: list[GeminiNIDExtraction] = []
+        for future in futures:
+            try:
+                extractions.append(future.result())
+            except (GeminiServiceError, ValidationError) as exc:
+                logger.warning("Extraction sample failed: %s", type(exc).__name__)
+
+    if not extractions:
+        raise GeminiServiceError("All extraction attempts failed.")
+    return extractions
+
+
 def extract_nid_data(front_jpeg: bytes, back_jpeg: bytes) -> GeminiNIDExtraction:
     """Extract structured NID data from prepared front and back JPEG images.
+
+    Runs ``config.EXTRACTION_SAMPLES`` independent extractions and keeps only
+    the field values that agree across a majority of them, so that values the
+    model reconstructed from an unclear image — which vary between runs —
+    are discarded instead of returned. Note that the sampling temperature is
+    deliberately left at the model default: at temperature zero every sample
+    would be identical and the agreement check would detect nothing.
 
     Args:
         front_jpeg: Normalized JPEG bytes for the front of the NID card.
         back_jpeg: Normalized JPEG bytes for the back of the NID card.
 
     Returns:
-        The extracted, validated NID data.
+        The agreed, validated NID data.
 
     Raises:
         GeminiConfigurationError: If the API key is not configured.
-        GeminiServiceError: If the API call fails after a retry, or the
-            response cannot be parsed.
+        GeminiServiceError: If every extraction attempt fails, or a response
+            cannot be parsed.
     """
     if not config.GEMINI_API_KEY:
         raise GeminiConfigurationError("GEMINI_API_KEY is not configured.")
 
     client = Client(api_key=config.GEMINI_API_KEY)
-    response = _call_gemini(client, front_jpeg, back_jpeg)
-    return _parse_response(response)
+    sample_count = config.extraction_samples()
+    if sample_count == 1:
+        logger.info("EXTRACTION_SAMPLES=1: single extraction, no agreement check")
+        return _extract_once(client, front_jpeg, back_jpeg)
+
+    logger.info("running %d extraction samples", sample_count)
+    extractions = _gather_samples(client, front_jpeg, back_jpeg, sample_count)
+    if len(extractions) < sample_count:
+        logger.warning(
+            "%d of %d samples failed; voting over the survivors",
+            sample_count - len(extractions),
+            sample_count,
+        )
+    return build_consensus(extractions, minimum_agreement(len(extractions)))

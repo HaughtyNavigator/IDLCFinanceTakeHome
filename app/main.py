@@ -32,6 +32,12 @@ logger = logging.getLogger("nid_extractor")
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
+UNREADABLE_MESSAGE = (
+    "The images were not clear enough to read reliably. Too few fields could "
+    "be extracted consistently. Please upload sharper, well-lit photos of the "
+    "NID card and try again."
+)
+
 MISSING_KEY_MESSAGE = (
     "Server is not configured: GEMINI_API_KEY is not set. Set it in a .env "
     "file (see .env.example) or pass it to the container, then restart."
@@ -182,8 +188,7 @@ def _resolve_extraction_outcome(extraction: GeminiNIDExtraction) -> NIDData:
 
     Raises:
         HTTPException: With a 422 status if the images are not a Bangladesh
-            NID card, or if they were unreadable and no fields were
-            extracted.
+            NID card, or if too many fields failed the agreement check.
     """
     if not extraction.is_nid:
         raise HTTPException(
@@ -192,9 +197,22 @@ def _resolve_extraction_outcome(extraction: GeminiNIDExtraction) -> NIDData:
         )
 
     public_data = extraction.to_public()
-    all_fields_empty = not any(public_data.model_dump().values())
-    if extraction.readability_issue and all_fields_empty:
-        raise HTTPException(status_code=422, detail=extraction.readability_issue)
+    unreadable = sum(1 for value in public_data.model_dump().values() if not value)
+    logger.info(
+        "extraction outcome: %d unreadable field(s), limit %d",
+        unreadable,
+        config.MAX_UNREADABLE_FIELDS,
+    )
+    if unreadable > config.MAX_UNREADABLE_FIELDS:
+        # A result this sparse is not worth returning: the samples disagreed
+        # on most of the card, so the photo itself is the problem.
+        # The model's own complaint, when it gave one, is useful context but
+        # rarely tells the user what to do; the standard ask is appended so
+        # the message always ends with the retry instruction.
+        detail = UNREADABLE_MESSAGE
+        if extraction.readability_issue:
+            detail = f"{extraction.readability_issue.rstrip('. ')}. {detail}"
+        raise HTTPException(status_code=422, detail=detail)
 
     return public_data
 

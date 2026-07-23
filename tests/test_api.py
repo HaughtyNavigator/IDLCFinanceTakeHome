@@ -9,6 +9,7 @@ with a stub. No test in this module makes a network call or requires
 
 from __future__ import annotations
 
+import logging
 from io import BytesIO
 from typing import Any
 
@@ -16,6 +17,8 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
+from app import config
+from app.consensus import build_consensus, minimum_agreement, vote
 from app.gemini_client import GeminiConfigurationError, GeminiServiceError
 from app.main import app
 from app.schemas import GeminiNIDExtraction
@@ -120,6 +123,16 @@ EXPECTED_FULL_RESPONSE: dict[str, str] = {
 ALL_PUBLIC_KEYS = frozenset(EXPECTED_FULL_RESPONSE.keys())
 
 
+def readable_extraction(**overrides: Any) -> GeminiNIDExtraction:
+    """Build an extraction that passes the unreadable-field limit.
+
+    Tests that exercise something other than that limit start from a fully
+    populated card and override only the field under test, so they are not
+    rejected for being too sparse.
+    """
+    return GeminiNIDExtraction(**{**FULL_EXTRACTION_KWARGS, **overrides})
+
+
 def test_missing_both_files_returns_422(client: TestClient) -> None:
     """Missing both ``front`` and ``back`` yields 422 naming both fields."""
     response = client.post("/extract-nid", files={})
@@ -195,11 +208,9 @@ def test_happy_path_returns_full_public_response(
 def test_partial_extraction_preserves_null_keys(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Partial extraction (only ``name`` set) returns 200 with all ten keys present, others null."""
-    patch_extract(
-        monkeypatch,
-        return_value=GeminiNIDExtraction(is_nid=True, name="Md. Rahim"),
-    )
+    """A partial extraction within the limit returns 200 with all ten keys present."""
+    missing = {"placeOfBirth": None, "issueDate": None, "motherName": None}
+    patch_extract(monkeypatch, return_value=readable_extraction(**missing))
     files = build_files(make_jpeg(400, 400), make_jpeg(400, 400))
 
     response = client.post("/extract-nid", files=files)
@@ -208,8 +219,179 @@ def test_partial_extraction_preserves_null_keys(
     body = response.json()
     assert set(body.keys()) == ALL_PUBLIC_KEYS
     assert body["name"] == "Md. Rahim"
-    for key in ALL_PUBLIC_KEYS - {"name"}:
+    for key in missing:
         assert body[key] is None
+
+
+def test_no_agreed_fields_returns_unreadable_422(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When no field survives the agreement check, the images are rejected as unclear."""
+    patch_extract(monkeypatch, return_value=GeminiNIDExtraction(is_nid=True))
+    files = build_files(make_jpeg(400, 400), make_jpeg(400, 400))
+
+    response = client.post("/extract-nid", files=files)
+
+    assert response.status_code == 422
+    assert "not clear enough" in response.json()["error"]
+
+
+def test_five_unreadable_fields_are_rejected_instead_of_returned(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Five missing fields is one too many: no partial JSON, a retry ask instead."""
+    patch_extract(
+        monkeypatch,
+        return_value=readable_extraction(
+            motherName=None,
+            placeOfBirth=None,
+            issueDate=None,
+            bloodGroup=None,
+            nidNumber=None,
+        ),
+    )
+    files = build_files(make_jpeg(400, 400), make_jpeg(400, 400))
+
+    response = client.post("/extract-nid", files=files)
+
+    assert response.status_code == 422
+    body = response.json()
+    assert set(body.keys()) == {"error"}
+    assert "not clear enough" in body["error"]
+    assert "try again" in body["error"]
+
+
+def test_four_unreadable_fields_are_still_returned(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Four missing fields is the documented limit and still yields a 200."""
+    patch_extract(
+        monkeypatch,
+        return_value=readable_extraction(
+            motherName=None,
+            placeOfBirth=None,
+            issueDate=None,
+            bloodGroup=None,
+        ),
+    )
+    files = build_files(make_jpeg(400, 400), make_jpeg(400, 400))
+
+    response = client.post("/extract-nid", files=files)
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "Md. Rahim"
+
+
+def test_vote_keeps_value_agreed_by_majority() -> None:
+    """A value produced by two of three samples is accepted."""
+    assert vote(["Md. Rahim", "Md. Rahim", "Md. Rahmn"], 2) == "Md. Rahim"
+
+
+def test_vote_discards_value_when_every_sample_differs() -> None:
+    """Three different readings of the same field agree on nothing."""
+    assert vote(["1234567890", "1234567891", "1234567892"], 2) is None
+
+
+def test_vote_ignores_cosmetic_differences() -> None:
+    """Whitespace, case and trailing punctuation do not count as disagreement."""
+    assert vote(["Md. Rahim", "md.  rahim ", "Md. Rahim."], 2) == "Md. Rahim"
+
+
+def test_vote_requires_agreement_against_all_samples() -> None:
+    """A field only one of three samples read at all is not accepted."""
+    assert vote(["Dhaka", None, None], 2) is None
+
+
+def test_vote_returns_none_when_no_sample_read_the_field() -> None:
+    """A field every sample left empty stays empty."""
+    assert vote([None, None, None], 2) is None
+
+
+def test_minimum_agreement_is_a_simple_majority() -> None:
+    """One of one, two of two, two of three, three of five."""
+    assert [minimum_agreement(n) for n in (1, 2, 3, 4, 5)] == [1, 2, 2, 3, 3]
+
+
+def test_build_consensus_keeps_agreed_fields_and_drops_the_rest() -> None:
+    """Agreed fields survive; fields that differ between samples are nulled."""
+    samples = [
+        GeminiNIDExtraction(is_nid=True, name="Md. Rahim", nidNumber="1234567890"),
+        GeminiNIDExtraction(is_nid=True, name="Md. Rahim", nidNumber="1234567891"),
+        GeminiNIDExtraction(is_nid=True, name="Md. Rahim", nidNumber="1234567892"),
+    ]
+
+    merged = build_consensus(samples, minimum_agreement(len(samples)))
+
+    assert merged.name == "Md. Rahim"
+    assert merged.nidNumber is None
+    assert merged.is_nid is True
+
+
+def test_build_consensus_rejects_non_nid_by_majority() -> None:
+    """If most samples say the images are not an NID card, the consensus agrees."""
+    samples = [
+        GeminiNIDExtraction(is_nid=False),
+        GeminiNIDExtraction(is_nid=False),
+        GeminiNIDExtraction(is_nid=True),
+    ]
+
+    assert build_consensus(samples, minimum_agreement(len(samples))).is_nid is False
+
+
+def test_consensus_logging_hides_values_by_default(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The vote is logged per field, but extracted PII is not."""
+    monkeypatch.setattr("app.config.CONSENSUS_LOG_VALUES", "false")
+    samples = [
+        GeminiNIDExtraction(is_nid=True, name="Md. Rahim", nidNumber="1234567890"),
+        GeminiNIDExtraction(is_nid=True, name="Md. Rahim", nidNumber="1234567891"),
+    ]
+
+    with caplog.at_level(logging.INFO, logger="nid_extractor.consensus"):
+        build_consensus(samples, minimum_agreement(len(samples)))
+
+    logged = caplog.text
+    assert "name" in logged and "nidNumber" in logged
+    assert "2/2" in logged
+    assert "Md. Rahim" not in logged
+    assert "1234567890" not in logged
+
+
+def test_consensus_logging_shows_values_when_explicitly_enabled(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The debug flag opts in to logging the agreed values and the candidates."""
+    monkeypatch.setattr("app.config.CONSENSUS_LOG_VALUES", "true")
+    samples = [
+        GeminiNIDExtraction(is_nid=True, name="Md. Rahim", nidNumber="1234567890"),
+        GeminiNIDExtraction(is_nid=True, name="Md. Rahim", nidNumber="1234567891"),
+    ]
+
+    with caplog.at_level(logging.INFO, logger="nid_extractor.consensus"):
+        build_consensus(samples, minimum_agreement(len(samples)))
+
+    logged = caplog.text
+    assert "Md. Rahim" in logged
+    assert "1234567890" in logged and "1234567891" in logged
+
+
+def test_consensus_log_values_defaults_to_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only an explicit truthy value enables PII logging; a typo fails safe."""
+    monkeypatch.setattr("app.config.CONSENSUS_LOG_VALUES", "ture")
+    assert config.consensus_log_values() is False
+    monkeypatch.setattr("app.config.CONSENSUS_LOG_VALUES", "TRUE")
+    assert config.consensus_log_values() is True
+
+
+def test_extraction_samples_clamps_and_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bad or oversized sample count cannot issue unbounded API calls."""
+    monkeypatch.setattr("app.config.EXTRACTION_SAMPLES", "99")
+    assert config.extraction_samples() == config.MAX_EXTRACTION_SAMPLES
+    monkeypatch.setattr("app.config.EXTRACTION_SAMPLES", "not-a-number")
+    assert config.extraction_samples() == 3
 
 
 def test_non_nid_images_return_422(
@@ -230,7 +412,7 @@ def test_non_nid_images_return_422(
 def test_readability_issue_with_no_fields_returns_422(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A readability issue with all fields null surfaces the issue text in a 422."""
+    """A readability issue on a rejected extraction is surfaced with the retry ask."""
     patch_extract(
         monkeypatch,
         return_value=GeminiNIDExtraction(
@@ -243,7 +425,9 @@ def test_readability_issue_with_no_fields_returns_422(
     response = client.post("/extract-nid", files=files)
 
     assert response.status_code == 422
-    assert response.json()["error"] == "Images are too blurry to read"
+    error = response.json()["error"]
+    assert error.startswith("Images are too blurry to read.")
+    assert "try again" in error
 
 
 def test_gemini_service_error_returns_502(
@@ -285,10 +469,7 @@ def test_invalid_nid_number_is_nulled_by_schema_validation(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An invalid ``nidNumber`` (too few digits) is nulled by Pydantic validation."""
-    patch_extract(
-        monkeypatch,
-        return_value=GeminiNIDExtraction(nidNumber="12345", is_nid=True),
-    )
+    patch_extract(monkeypatch, return_value=readable_extraction(nidNumber="12345"))
     files = build_files(make_jpeg(400, 400), make_jpeg(400, 400))
 
     response = client.post("/extract-nid", files=files)
@@ -301,10 +482,7 @@ def test_invalid_blood_group_is_nulled_by_schema_validation(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An invalid ``bloodGroup`` (not a recognized group) is nulled by Pydantic validation."""
-    patch_extract(
-        monkeypatch,
-        return_value=GeminiNIDExtraction(bloodGroup="XY", is_nid=True),
-    )
+    patch_extract(monkeypatch, return_value=readable_extraction(bloodGroup="XY"))
     files = build_files(make_jpeg(400, 400), make_jpeg(400, 400))
 
     response = client.post("/extract-nid", files=files)
@@ -319,8 +497,8 @@ def test_present_address_only_mirrors_to_permanent(
     """Only ``presentAddress`` set mirrors into ``permanentAddress`` too."""
     patch_extract(
         monkeypatch,
-        return_value=GeminiNIDExtraction(
-            is_nid=True, presentAddress="Dhaka, Bangladesh"
+        return_value=readable_extraction(
+            presentAddress="Dhaka, Bangladesh", permanentAddress=None
         ),
     )
     files = build_files(make_jpeg(400, 400), make_jpeg(400, 400))
@@ -339,8 +517,8 @@ def test_permanent_address_only_mirrors_to_present(
     """Only ``permanentAddress`` set mirrors into ``presentAddress`` too."""
     patch_extract(
         monkeypatch,
-        return_value=GeminiNIDExtraction(
-            is_nid=True, permanentAddress="Cumilla, Bangladesh"
+        return_value=readable_extraction(
+            presentAddress=None, permanentAddress="Cumilla, Bangladesh"
         ),
     )
     files = build_files(make_jpeg(400, 400), make_jpeg(400, 400))
@@ -359,8 +537,7 @@ def test_distinct_addresses_are_preserved_unchanged(
     """Two distinct addresses are both preserved without mirroring."""
     patch_extract(
         monkeypatch,
-        return_value=GeminiNIDExtraction(
-            is_nid=True,
+        return_value=readable_extraction(
             presentAddress="Dhaka, Bangladesh",
             permanentAddress="Cumilla, Bangladesh",
         ),
@@ -379,10 +556,7 @@ def test_messy_blood_group_is_normalized(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A messy but valid ``bloodGroup`` (e.g. ``"b +"``) normalizes to ``"B+"``."""
-    patch_extract(
-        monkeypatch,
-        return_value=GeminiNIDExtraction(bloodGroup="b +", is_nid=True),
-    )
+    patch_extract(monkeypatch, return_value=readable_extraction(bloodGroup="b +"))
     files = build_files(make_jpeg(400, 400), make_jpeg(400, 400))
 
     response = client.post("/extract-nid", files=files)

@@ -99,6 +99,11 @@ Every field is `string | null`. Any field the model cannot read with
 confidence is `null` — a partially filled response is still a `200`, and the
 service never guesses or fabricates values.
 
+A `200` is only returned while **at most four** of the ten fields are
+`null`. At five or more the response is not worth acting on, so the service
+returns a `422` asking for a better photo instead of a mostly empty object
+(see the error table below).
+
 | Field | Description | Normalization / validation |
 |---|---|---|
 | `name` | Card holder's full name, in English. | Bengali text is translated semantically using standard Bangladeshi romanization (e.g. `মোঃ` → `Md.`, `বেগম` → `Begum`). |
@@ -137,7 +142,7 @@ Every error, regardless of cause, uses one JSON shape:
 | `413` | Combined upload exceeds 10 MB. | `Request too large (maximum 10 MB total).` |
 | `422` | `front` and/or `back` form field is missing. | `Missing required file field(s): front, back` |
 | `422` | The images are not a Bangladesh NID card. | `The uploaded images do not appear to be a Bangladesh NID card.` |
-| `422` | The images are unreadable (blurry, cropped, poorly lit) **and** no fields at all could be extracted. | A short description of the readability problem, e.g. `The images are too blurry to read.` |
+| `422` | Five or more of the ten fields could not be extracted consistently. | `The images were not clear enough to read reliably. Too few fields could be extracted consistently. Please upload sharper, well-lit photos of the NID card and try again.` — prefixed with the model's own readability complaint when it gave one. |
 | `500` | Unexpected server error. | `Internal server error.` |
 | `502` | The AI service failed, timed out, or returned an unusable response (after one automatic retry with a short backoff). | `AI service temporarily unavailable, please retry.` |
 | `503` | The server has no `GEMINI_API_KEY` configured. This is an operator error, not a client error — retrying will not help until the variable is set. | `Server is not configured: GEMINI_API_KEY is not set. Set it in a .env file (see .env.example) or pass it to the container, then restart.` |
@@ -145,9 +150,12 @@ Every error, regardless of cause, uses one JSON shape:
 Notes:
 
 - A readability problem alone does **not** cause an error: if the model
-  flags the images as hard to read but still extracts at least one field,
-  the request returns `200` with the extracted fields and `null` elsewhere.
-  The `422` readability error occurs only when *nothing* could be extracted.
+  flags the images as hard to read but at least six fields survive the
+  agreement check, the request returns `200` with those fields and `null`
+  elsewhere. The `422` readability error occurs only once five or more
+  fields fail.
+- The unreadable count is taken **after** address mirroring, so a card that
+  prints a single address counts both address fields as readable.
 - `502` is retryable by the client. The server already retries the AI call
   once internally, so a `502` means two consecutive attempts failed —
   waiting briefly before retrying is recommended.
@@ -156,10 +164,10 @@ Notes:
 
 | Status | Meaning |
 |---|---|
-| `200` | Extraction succeeded (possibly with some `null` fields). |
+| `200` | Extraction succeeded (with at most four `null` fields). |
 | `400` | Invalid image upload (format or resolution). |
 | `413` | Upload too large. |
-| `422` | Missing file field, not an NID card, or fully unreadable images. |
+| `422` | Missing file field, not an NID card, or too few readable fields. |
 | `500` | Unexpected server error. |
 | `502` | AI service unavailable. |
 | `503` | Server misconfigured — `GEMINI_API_KEY` not set. |
@@ -168,14 +176,27 @@ Notes:
 
 ## Operational behavior
 
-- **Processing model:** each request makes exactly one Gemini
-  structured-output call (plus at most one internal retry on transient
-  failure). Typical latency is dominated by the model call; the configured
+- **Processing model:** each request runs `EXTRACTION_SAMPLES` independent
+  Gemini structured-output calls (default 3, plus at most one internal retry
+  each on transient failure). The samples are issued concurrently, so
+  latency stays close to that of a single call even though several are made.
+  Only fields that agree across a majority of samples are returned; the rest
+  are `null`. If every sample fails, the request returns `502`; if some
+  succeed, the consensus is taken over those. The configured per-call
   timeout is 60 seconds.
+- **Why several samples:** a value the model genuinely read is stable across
+  runs, while one it reconstructed from an unclear image differs each time.
+  Disagreement is therefore treated as an unreadable field. The sampling
+  temperature is deliberately left at the model default — at temperature
+  zero every sample would be identical and the check would detect nothing.
+- **Consensus logging:** each request logs one line per field showing how
+  many samples backed the winning reading and whether it was kept, dropped
+  as inconsistent, or never read at all. The values themselves are omitted
+  unless `CONSENSUS_LOG_VALUES` is explicitly enabled — see below.
 - **PII safety:** the service logs only request metadata — method, path,
-  status code, duration, and a coarse error category. Image bytes, extracted
-  field values, and the Gemini API key are never logged and never appear in
-  error messages.
+  status code, duration, a coarse error category, and the per-field vote
+  counts above. Image bytes, extracted field values, and the Gemini API key
+  are never logged and never appear in error messages.
 - **Statelessness:** nothing is persisted. Uploaded images and extracted
   data exist only in memory for the duration of the request.
 
@@ -187,7 +208,23 @@ Set via environment variables / `.env` (see `.env.example`):
 |---|---|---|
 | `GEMINI_API_KEY` | — (required) | Google Gemini API key. If unset, the server still starts but logs a critical startup error and fails extraction requests with `503`. |
 | `GEMINI_MODEL` | `gemini-3.1-flash-lite` | Gemini model used for extraction. |
+| `EXTRACTION_SAMPLES` | `3` | How many independent extractions to run per request. Fields must agree across a majority of samples to be returned. `1` disables consensus. |
+| `CONSENSUS_LOG_VALUES` | `false` | Local debugging only. Include the extracted values, and the competing readings for a disputed field, in the consensus log lines. Those values are personal data, so leave this off anywhere logs are collected, shipped, or shared. Only an explicit `1`/`true`/`yes`/`on` enables it. |
+
+Example of the per-field log emitted for one request (default settings, so
+values are hidden):
+
+```
+consensus over 3 sample(s), 2 must agree (values hidden, set CONSENSUS_LOG_VALUES=true to show)
+  name              DROPPED 1/3  samples disagreed
+  fatherName        KEPT    3/3  majority agreed
+  placeOfBirth      EMPTY   0/3  no sample read this field
+  ...
+  is_nid            KEPT    3/3  recognised as an NID card
+consensus result: 6/10 field(s) kept
+```
 
 Fixed limits (in `app/config.py`): 10 MB combined upload, 300 px minimum
 side, 1600 px maximum longest side, 60 s Gemini timeout, one retry after a
-2 s delay.
+2 s delay, and `MAX_UNREADABLE_FIELDS = 4` — the most `null` fields a `200`
+may contain before the extraction is rejected as an unusable photo.
