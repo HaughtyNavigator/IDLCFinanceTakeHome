@@ -18,10 +18,10 @@ GEMINI_RETRY_DELAY_SECONDS: float = 2.0
 EXTRACTION_SAMPLES: str = os.getenv("EXTRACTION_SAMPLES", "3")
 MAX_EXTRACTION_SAMPLES: int = 5
 # How many of the ten public fields may be unreadable before the whole
-# extraction is rejected as an unusable photo. At five or more missing
+# extraction is rejected as an unusable photo. At eight or more missing
 # fields the result is too sparse to be worth returning, so the caller is
 # asked for a better picture instead.
-MAX_UNREADABLE_FIELDS: int = 4
+MAX_UNREADABLE_FIELDS: int = 7
 # Include the actual extracted values in the consensus log lines. Off by
 # default: those values are personal data (name, NID number, address) and
 # normal operation logs metadata only. For local debugging of extraction

@@ -99,9 +99,9 @@ Every field is `string | null`. Any field the model cannot read with
 confidence is `null` — a partially filled response is still a `200`, and the
 service never guesses or fabricates values.
 
-A `200` is only returned while **at most four** of the ten fields are
-`null`. At five or more the response is not worth acting on, so the service
-returns a `422` asking for a better photo instead of a mostly empty object
+A `200` is only returned while **at most seven** of the ten fields are
+`null`. At eight or more the response is not worth acting on, so the service
+returns a `422` asking for a better photo instead of a near-empty object
 (see the error table below).
 
 | Field | Description | Normalization / validation |
@@ -142,7 +142,7 @@ Every error, regardless of cause, uses one JSON shape:
 | `413` | Combined upload exceeds 10 MB. | `Request too large (maximum 10 MB total).` |
 | `422` | `front` and/or `back` form field is missing. | `Missing required file field(s): front, back` |
 | `422` | The images are not a Bangladesh NID card. | `The uploaded images do not appear to be a Bangladesh NID card.` |
-| `422` | Five or more of the ten fields could not be extracted consistently. | `The images were not clear enough to read reliably. Too few fields could be extracted consistently. Please upload sharper, well-lit photos of the NID card and try again.` — prefixed with the model's own readability complaint when it gave one. |
+| `422` | Eight or more of the ten fields could not be extracted consistently. | `The images were not clear enough to read reliably. Too few fields could be extracted consistently. Please upload sharper, well-lit photos of the NID card and try again.` — prefixed with the model's own readability complaint when it gave one. |
 | `500` | Unexpected server error. | `Internal server error.` |
 | `502` | The AI service failed, timed out, or returned an unusable response (after one automatic retry with a short backoff). | `AI service temporarily unavailable, please retry.` |
 | `503` | The server has no `GEMINI_API_KEY` configured. This is an operator error, not a client error — retrying will not help until the variable is set. | `Server is not configured: GEMINI_API_KEY is not set. Set it in a .env file (see .env.example) or pass it to the container, then restart.` |
@@ -150,9 +150,9 @@ Every error, regardless of cause, uses one JSON shape:
 Notes:
 
 - A readability problem alone does **not** cause an error: if the model
-  flags the images as hard to read but at least six fields survive the
+  flags the images as hard to read but at least three fields survive the
   agreement check, the request returns `200` with those fields and `null`
-  elsewhere. The `422` readability error occurs only once five or more
+  elsewhere. The `422` readability error occurs only once eight or more
   fields fail.
 - The unreadable count is taken **after** address mirroring, so a card that
   prints a single address counts both address fields as readable.
@@ -164,7 +164,7 @@ Notes:
 
 | Status | Meaning |
 |---|---|
-| `200` | Extraction succeeded (with at most four `null` fields). |
+| `200` | Extraction succeeded (with at most seven `null` fields). |
 | `400` | Invalid image upload (format or resolution). |
 | `413` | Upload too large. |
 | `422` | Missing file field, not an NID card, or too few readable fields. |
@@ -226,5 +226,5 @@ consensus result: 6/10 field(s) kept
 
 Fixed limits (in `app/config.py`): 10 MB combined upload, 300 px minimum
 side, 1600 px maximum longest side, 60 s Gemini timeout, one retry after a
-2 s delay, and `MAX_UNREADABLE_FIELDS = 4` — the most `null` fields a `200`
+2 s delay, and `MAX_UNREADABLE_FIELDS = 7` — the most `null` fields a `200`
 may contain before the extraction is rejected as an unusable photo.

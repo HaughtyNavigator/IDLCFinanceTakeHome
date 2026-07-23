@@ -23,9 +23,9 @@ structuring in one step — no separate OCR or translation library is used.
 - **Partial extraction is success, up to a point** — any field the model
   cannot confidently read is returned as `null` in a `200` response instead
   of failing the whole request, and the UI names the missing fields and asks
-  for a better photo. Past four missing fields the result is too sparse to
+  for a better photo. Past seven missing fields the result is too sparse to
   be useful, so the request is rejected with a `422` asking the user to
-  retry rather than returning a mostly empty object.
+  retry rather than returning a near-empty object.
 - **Self-consistency voting** — each request runs several independent
   extractions and returns only the field values that agree across a majority
   of them. Genuine readings are stable between runs while hallucinations
@@ -180,8 +180,8 @@ of an older laminated card, for `bloodGroup`), and `issueDate` is normalized
 to `YYYY-MM-DD` like `dateOfBirth`.
 
 Any field the model cannot confidently read is returned as `null`; a
-partially filled response is still a `200`, as long as no more than four of
-the ten fields are missing. At five or more the service returns a `422`
+partially filled response is still a `200`, as long as no more than seven of
+the ten fields are missing. At eight or more the service returns a `422`
 asking for a clearer photo instead. If the card only ever printed a
 single address, `presentAddress` and `permanentAddress` are guaranteed to be
 mirrored to the same value rather than one being left `null`.
@@ -194,10 +194,10 @@ mirrored to the same value rather than one being left `null`.
 | Wrong format / corrupt image (Pillow verify fails) | 400 | "Image file is corrupt or not a supported format (JPG/JPEG/PNG)." |
 | Image too small (< 300px on either dimension) | 400 | Message suggesting a higher-resolution photo |
 | `is_nid` is false | 422 | "The uploaded images do not appear to be a Bangladesh NID card." |
-| 5+ of the 10 fields not agreed across samples | 422 | Message asking for sharper photos and a retry (prefixed with the model's own readability complaint, if any) |
+| 8+ of the 10 fields not agreed across samples | 422 | Message asking for sharper photos and a retry (prefixed with the model's own readability complaint, if any) |
 | Gemini API failure / timeout | 502 | "AI service temporarily unavailable, please retry." (one automatic retry with backoff before failing) |
 | `GEMINI_API_KEY` not set on the server | 503 | Message naming the missing variable (operator error, not client error) |
-| Partial extraction (1-4 fields null) | 200 | Data returned as-is with nulls; the frontend marks each as "Not readable" and shows a banner naming them and asking for a better photo |
+| Partial extraction (1-7 fields null) | 200 | Data returned as-is with nulls; the frontend marks each as "Not readable" and shows a banner naming them and asking for a better photo |
 
 ## Architecture
 
@@ -251,11 +251,13 @@ upload (front, back)
   A card photo often has one illegible field (e.g. a smudged NID number);
   failing the whole request would force needless re-uploads, so partial data
   is returned as a `200` with `null` for anything not confidently read. Past
-  four missing fields that reasoning inverts — the problem is the photo, not
-  one field, and returning six nulls invites the caller to build on a result
-  that mostly is not there — so the request is rejected with a `422` and a
-  retry instruction. The threshold is one constant,
-  `config.MAX_UNREADABLE_FIELDS`.
+  seven missing fields that reasoning inverts — the problem is the photo, not
+  one field, and returning eight nulls invites the caller to build on a
+  result that is barely there — so the request is rejected with a `422` and
+  a retry instruction. The threshold is one constant,
+  `config.MAX_UNREADABLE_FIELDS`, deliberately set to tolerate heavily
+  partial reads and reject only a near-total failure; the per-field warning
+  banner covers the milder cases.
 - **Why PII-safe logging:** In a fintech context, NID numbers, names, and
   addresses are sensitive personal data; logging only metadata (status,
   duration, error category) keeps the audit trail useful for debugging

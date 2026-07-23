@@ -236,18 +236,21 @@ def test_no_agreed_fields_returns_unreadable_422(
     assert "not clear enough" in response.json()["error"]
 
 
-def test_five_unreadable_fields_are_rejected_instead_of_returned(
+def test_eight_unreadable_fields_are_rejected_instead_of_returned(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Five missing fields is one too many: no partial JSON, a retry ask instead."""
+    """Eight missing fields is one too many: no partial JSON, a retry ask instead."""
     patch_extract(
         monkeypatch,
         return_value=readable_extraction(
             motherName=None,
+            dateOfBirth=None,
             placeOfBirth=None,
             issueDate=None,
             bloodGroup=None,
             nidNumber=None,
+            presentAddress=None,
+            permanentAddress=None,
         ),
     )
     files = build_files(make_jpeg(400, 400), make_jpeg(400, 400))
@@ -261,17 +264,20 @@ def test_five_unreadable_fields_are_rejected_instead_of_returned(
     assert "try again" in body["error"]
 
 
-def test_four_unreadable_fields_are_still_returned(
+def test_seven_unreadable_fields_are_still_returned(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Four missing fields is the documented limit and still yields a 200."""
+    """Seven missing fields is the documented limit and still yields a 200."""
     patch_extract(
         monkeypatch,
         return_value=readable_extraction(
             motherName=None,
+            dateOfBirth=None,
             placeOfBirth=None,
             issueDate=None,
             bloodGroup=None,
+            presentAddress=None,
+            permanentAddress=None,
         ),
     )
     files = build_files(make_jpeg(400, 400), make_jpeg(400, 400))
@@ -279,7 +285,9 @@ def test_four_unreadable_fields_are_still_returned(
     response = client.post("/extract-nid", files=files)
 
     assert response.status_code == 200
-    assert response.json()["name"] == "Md. Rahim"
+    body = response.json()
+    assert body["name"] == "Md. Rahim"
+    assert sum(1 for value in body.values() if value is None) == 7
 
 
 def test_vote_keeps_value_agreed_by_majority() -> None:
