@@ -189,6 +189,26 @@ Notes:
   Disagreement is therefore treated as an unreadable field. The sampling
   temperature is deliberately left at the model default — at temperature
   zero every sample would be identical and the check would detect nothing.
+- **How agreement is judged** — three policies, because the same similarity
+  score means opposite things depending on the field:
+
+  | Policy | Fields | Rule |
+  |---|---|---|
+  | Similarity | `presentAddress`, `permanentAddress` | Readings 85% alike or better are **merged**. Long free text where the model picks its own rendering of the printed form labels: the same address arrives as `Sector No-10` in one sample and `Sector No.-10` in the next. |
+  | Exact | `name`, `fatherName`, `motherName`, `placeOfBirth` | Readings must match exactly, ignoring case, whitespace and trailing punctuation. Simple majority wins. Romanization of the same Bengali text varies legitimately between runs. |
+  | Strict | `nidNumber`, `dateOfBirth`, `issueDate`, `bloodGroup` | Exact match **and** no dissenting reading 70% or more similar to the winner. A majority alone is not enough. |
+
+- **Why a majority is not enough for numbers and dates:** self-consistency
+  catches *random* fabrication, not *systematic* misreading. On a degraded
+  photo the samples can converge on the same wrong digit — measured on a
+  real blurred card, three of five samples returned the same incorrect date
+  of birth and it passed as consensus. The two dissenting samples differed
+  from it by one digit, scoring 0.90. That resemblance is the signal: for a
+  fixed-format value, a near-miss dissent means the samples are arguing over
+  a character, so the field is discarded rather than decided by vote. Short
+  fields like `bloodGroup` rarely trip this (two 2-character groups score
+  about 0.5, below the threshold), so in practice they still fall back to
+  the exact majority.
 - **Consensus logging:** each request logs one line per field showing how
   many samples backed the winning reading and whether it was kept, dropped
   as inconsistent, or never read at all. The values themselves are omitted

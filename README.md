@@ -30,7 +30,9 @@ structuring in one step — no separate OCR or translation library is used.
   extractions and returns only the field values that agree across a majority
   of them. Genuine readings are stable between runs while hallucinations
   vary, so disagreement is treated as an unreadable field and returned as
-  `null`.
+  `null`. Matching is per-field: addresses merge near-identical readings,
+  names need an exact majority, and numbers and dates additionally reject
+  any value a dissenting sample read slightly differently.
 - **Strict JSON error contract** — every error path, regardless of cause,
   returns `{"error": "<message>"}` with an appropriate HTTP status code.
 - **Observable voting** — the terminal shows one line per field per request
@@ -221,7 +223,8 @@ upload (front, back)
   samples with structured output, retries once on transient failure, parses
   the responses.
 - `app/consensus.py` — pure voting logic: compares the samples field by
-  field and keeps only values agreed by a majority.
+  field under a per-field match policy (similarity, exact, or strict) and
+  keeps only the values that survive it.
 - `app/image_utils.py` — validates uploaded bytes as real images, checks
   minimum dimensions, applies EXIF orientation, downscales, re-encodes JPEG.
 - `app/config.py` — loads configuration (API key, model name, size/timeout
@@ -247,6 +250,24 @@ upload (front, back)
   differs each time, so disagreement exposes hallucination the model will
   not admit to. The cost is N API calls, issued concurrently so latency
   stays close to a single call.
+- **Why one similarity score drives two opposite rules:** the same 0.90
+  means different things for different fields, so `consensus.py` assigns
+  each field a match policy. For an **address**, two readings 0.88 alike are
+  the same address written with different form labels — exact matching
+  regressed a working card this way, dropping both address fields because
+  three samples wrote `Sector No-10`, `Sector No.-10` and `Road: 05`. Those
+  are merged. For a **number or date**, two readings 0.90 alike differ by
+  one character, which is what a model produces when it is guessing at an
+  ambiguous glyph, so the resemblance counts *against* the value and vetoes
+  it.
+- **Why a majority alone is unsafe for numbers and dates:** voting catches
+  random fabrication, not systematic misreading. Measured on a deliberately
+  degraded photo, three of five samples agreed on the same wrong date of
+  birth — a clean majority for a value that was simply incorrect — while the
+  two dissenters sat one digit away at 0.90. Under the strict policy that
+  near-miss discards the field instead of confirming it. On the sharp
+  original all ten fields still extract unanimously, so the rule costs
+  nothing on good input.
 - **Why nulls instead of errors for partial reads, but only up to a point:**
   A card photo often has one illegible field (e.g. a smudged NID number);
   failing the whole request would force needless re-uploads, so partial data

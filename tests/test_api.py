@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from app import config
-from app.consensus import build_consensus, minimum_agreement, vote
+from app.consensus import MatchPolicy, build_consensus, minimum_agreement, vote
 from app.gemini_client import GeminiConfigurationError, GeminiServiceError
 from app.main import app
 from app.schemas import GeminiNIDExtraction
@@ -313,6 +313,115 @@ def test_vote_requires_agreement_against_all_samples() -> None:
 def test_vote_returns_none_when_no_sample_read_the_field() -> None:
     """A field every sample left empty stays empty."""
     assert vote([None, None, None], 2) is None
+
+
+# Three readings of one synthetic address, shaped after a real observed
+# failure: two differ by a single period, the third translates the printed
+# form labels differently. No real card data is used in tests.
+ADDRESS_READINGS = [
+    "House/Holding: 10/5, Village/Road: 3, Block-B, Block No-B, "
+    "Post Office: Mirpur - 1216, Mirpur, Dhaka North City Corporation, Dhaka",
+    "House/Holding: 10/5, Village/Road: 3, Block-B, Block No.-B, "
+    "Post Office: Mirpur - 1216, Mirpur, Dhaka North City Corporation, Dhaka",
+    "Holding No: 10/5, Road: 3, Block-B, "
+    "Post Office: Mirpur - 1216, Mirpur, Dhaka North City Corporation, Dhaka",
+]
+
+
+def test_address_readings_agree_despite_label_wording() -> None:
+    """Same address written three ways counts as agreement under fuzzy matching."""
+    assert vote(ADDRESS_READINGS, 2, policy=MatchPolicy.FUZZY) in ADDRESS_READINGS
+    # The same readings are a three-way disagreement under exact matching,
+    # which is what made the addresses disappear in the first place.
+    assert vote(ADDRESS_READINGS, 2) is None
+
+
+def test_genuinely_different_addresses_still_disagree() -> None:
+    """Fuzzy matching accepts rewording, not three unrelated addresses."""
+    readings = [
+        "10/5, Road 3, Block B, Mirpur, Dhaka - 1216",
+        "42, Kazi Nazrul Islam Avenue, Kawran Bazar, Dhaka - 1215",
+        "7/A, College Road, Chawkbazar, Chattogram - 4000",
+    ]
+
+    assert vote(readings, 2, policy=MatchPolicy.FUZZY) is None
+
+
+def test_build_consensus_applies_fuzzy_matching_only_to_addresses() -> None:
+    """Addresses tolerate rewording; a differing NID digit is still a disagreement."""
+    samples = [
+        GeminiNIDExtraction(is_nid=True, presentAddress=reading, nidNumber=nid_number)
+        for reading, nid_number in zip(
+            ADDRESS_READINGS, ["1234567890123", "1234567898123", "1234561890123"]
+        )
+    ]
+
+    merged = build_consensus(samples, minimum_agreement(len(samples)))
+
+    assert merged.presentAddress in ADDRESS_READINGS
+    assert merged.permanentAddress == merged.presentAddress
+    # 0.92 similar to each other, and still rejected: a wrong digit is a
+    # wrong number, not a rewording.
+    assert merged.nidNumber is None
+
+
+def test_strict_policy_rejects_a_majority_built_on_a_disputed_digit() -> None:
+    """A majority is not enough when a dissenting sample differs by one digit.
+
+    Taken from a real degraded-image run: three samples agreed on a date
+    that was wrong, and the two dissenters differed from it by a single
+    digit. A simple majority returned the wrong date with confidence.
+    """
+    readings = ["1994-07-17", "1994-07-17", "1994-07-17", "1994-07-07", "1997-07-17"]
+
+    assert vote(readings, 3) == "1994-07-17"  # what a simple majority does
+    assert vote(readings, 3, policy=MatchPolicy.STRICT) is None
+
+
+def test_strict_policy_keeps_a_unanimous_reading() -> None:
+    """Agreement with no dissent at all is still accepted."""
+    readings = ["3314871546"] * 5
+
+    assert vote(readings, 3, policy=MatchPolicy.STRICT) == "3314871546"
+
+
+def test_strict_policy_ignores_an_unrelated_dissent() -> None:
+    """A dissent that resembles nothing is a misread sample, not a disputed digit."""
+    readings = ["3314871546", "3314871546", "2024-10-29"]
+
+    assert vote(readings, 2, policy=MatchPolicy.STRICT) == "3314871546"
+
+
+def test_strict_policy_tolerates_samples_that_read_nothing() -> None:
+    """A sample leaving the field empty is not a dissenting reading."""
+    readings = ["3314871546", "3314871546", None]
+
+    assert vote(readings, 2, policy=MatchPolicy.STRICT) == "3314871546"
+
+
+def test_build_consensus_applies_the_strict_policy_to_digit_fields() -> None:
+    """Digit and date fields veto on a near-miss; names keep simple majority."""
+    samples = [
+        GeminiNIDExtraction(
+            is_nid=True,
+            nidNumber=nid_number,
+            dateOfBirth=date_of_birth,
+            name=name,
+        )
+        for nid_number, date_of_birth, name in [
+            ("1234567890123", "1994-07-17", "Md. Rahim"),
+            ("1234567890123", "1994-07-17", "Md. Rahim"),
+            ("1234567898123", "1994-07-07", "Md. Rahmn"),
+        ]
+    ]
+
+    merged = build_consensus(samples, minimum_agreement(len(samples)))
+
+    assert merged.nidNumber is None
+    assert merged.dateOfBirth is None
+    # Names were deliberately left on simple majority: romanization of the
+    # same Bengali text varies legitimately between runs.
+    assert merged.name == "Md. Rahim"
 
 
 def test_minimum_agreement_is_a_simple_majority() -> None:
